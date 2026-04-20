@@ -31,19 +31,30 @@
 
 ## 실행 방법
 
+### 가장 간단한 실행 방법
+
 Python과 `pip`가 설치되어 있다면, 가상환경 없이도 바로 실행할 수 있습니다.
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-### 앱 실행
-
 ```bash
 python3 -m streamlit run app.py
 ```
 
 실행 후 브라우저가 열리면 바로 사용할 수 있습니다.
+
+### 가상환경을 사용해서 실행하는 방법
+
+패키지 충돌을 피하고 싶다면 가상환경을 만들어 실행해도 됩니다.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+python3 -m streamlit run app.py
+```
 
 ## 사용 방법
 
@@ -70,10 +81,12 @@ python3 -m streamlit run app.py
 
 - 줄 단위 또는 문단 단위로 처리합니다.
 - 직접 입력 시 `텍스트 패턴`을 고를 수 있습니다.
+- 영어 공부용 팟캐스트 transcript를 직접 붙여 넣어서 바로 PDF로 만들 수 있습니다.
 
 ### `PodScripts Transcript`
 
 - `Starting point is HH:MM:SS` 형식을 시간 정보처럼 인식합니다.
+- [PodScripts](https://podscripts.co) 에서 에피소드를 찾은 뒤 transcript를 복사해서 `직접 입력`에 붙여 넣으면 편하게 사용할 수 있습니다.
 
 ## 출력 파일
 

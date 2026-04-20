@@ -25,13 +25,13 @@ PODSCRIPTS_TIMESTAMP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-WORD_MODE = "단어 단위 밑줄"
-SENTENCE_MODE = "문장 단위 밑줄"
+WORD_MODE = "단어별 빈칸"
+SENTENCE_MODE = "문장 전체 빈칸"
 FILE_INPUT_MODE = "파일 업로드"
-DIRECT_INPUT_MODE = "직접 입력"
+DIRECT_INPUT_MODE = "텍스트 붙여넣기"
 PLAIN_TEXT_FORMAT = "일반 텍스트"
-SRT_FORMAT = "SRT"
-TEXT_PATTERN_BASIC = "기본"
+SRT_FORMAT = "SRT 자막"
+TEXT_PATTERN_BASIC = "일반 텍스트"
 TEXT_PATTERN_PODSCRIPTS = "PodScripts Transcript"
 PDF_FONT_NAME = "HYGothic-Medium"
 DISPLAY_TIMESTAMP_PATTERN = re.compile(r"(\d{2}:\d{2}:\d{2})")
@@ -793,65 +793,73 @@ def build_answer_key_filename(original_name: str) -> str:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Dictation PDF Generator", layout="centered")
-    st.title("Dictation PDF Generator")
-    st.caption("기준: 토큰화 없이 띄어쓰기 기준으로만 밑줄 처리합니다.")
+    st.set_page_config(page_title="영어 딕테이션 PDF 만들기", layout="centered")
+    st.title("영어 딕테이션 PDF 만들기")
+    st.write("자막이나 스크립트를 넣으면 문제지와 답지를 바로 만들 수 있어요.")
+
+    st.subheader("입력")
 
     input_mode = st.radio(
         "입력 방식",
         [FILE_INPUT_MODE, DIRECT_INPUT_MODE],
         horizontal=True,
     )
-    mode = st.radio("밑줄 방식", [WORD_MODE, SENTENCE_MODE], horizontal=True)
-    show_first_word = st.checkbox("각 문장의 첫 단어 표기", value=False)
 
     source_name = ""
     raw_text = ""
-    source_label = ""
     source_format = PLAIN_TEXT_FORMAT
     text_pattern = TEXT_PATTERN_BASIC
 
     if input_mode == FILE_INPUT_MODE:
-        uploaded_file = st.file_uploader("txt 또는 srt 파일 업로드", type=["txt", "srt"])
+        uploaded_file = st.file_uploader(
+            "자막 또는 스크립트 파일",
+            type=["txt", "srt"],
+        )
         if not uploaded_file:
-            st.info("파일을 올리면 즉시 미리보기와 PDF 다운로드가 가능합니다.")
+            st.info("`.txt` 또는 `.srt` 파일을 올려주세요.")
             return
 
         source_name = uploaded_file.name
-        source_label = uploaded_file.name
         raw_text = decode_text(uploaded_file.getvalue())
         source_format = SRT_FORMAT if is_srt_file(uploaded_file.name) else PLAIN_TEXT_FORMAT
     else:
         source_format = st.radio(
-            "직접 입력 형식",
+            "붙여 넣는 내용",
             [PLAIN_TEXT_FORMAT, SRT_FORMAT],
             horizontal=True,
         )
-        title = st.text_input("타이틀", value="Dictation")
-        raw_text = st.text_area("텍스트 내용", height=220)
+        title = st.text_input("제목", value="영어 딕테이션")
+        raw_text = st.text_area(
+            "텍스트",
+            height=220,
+            placeholder="자막이나 스크립트를 여기에 붙여 넣으세요.",
+        )
 
         if not raw_text.strip():
-            st.info("타이틀과 텍스트를 직접 입력하면 즉시 미리보기와 PDF 다운로드가 가능합니다.")
+            st.info("자막이나 스크립트를 붙여 넣어주세요.")
             return
 
         source_name = build_direct_input_name(title, source_format)
-        source_label = normalize_spaces(title) or "Dictation"
 
     if source_format == PLAIN_TEXT_FORMAT:
         text_pattern = st.radio(
-            "텍스트 패턴",
+            "텍스트 종류",
             [TEXT_PATTERN_BASIC, TEXT_PATTERN_PODSCRIPTS],
             horizontal=True,
         )
 
+    st.subheader("옵션")
+    mode = st.radio("빈칸 방식", [WORD_MODE, SENTENCE_MODE], horizontal=True)
+    show_first_word = st.checkbox("각 문장의 첫 단어 남기기", value=False)
+
     units = extract_units(source_name, raw_text, text_pattern=text_pattern)
 
     if not units:
-        st.error("본문을 추출하지 못했습니다. 파일 내용을 확인해주세요.")
+        st.error("읽을 수 있는 내용이 없어요. 파일 형식이나 텍스트를 다시 확인해주세요.")
         return
 
     has_timestamps = any(unit.timestamp for unit in units)
-    show_timestamps = st.checkbox("시간 표기", value=True) if has_timestamps else False
+    show_timestamps = st.checkbox("시간 표시하기", value=True) if has_timestamps else False
 
     preview_units = [
         transform_unit(unit, mode=mode, show_first_word=show_first_word) for unit in units
@@ -873,34 +881,17 @@ def main() -> None:
     st.subheader("미리보기")
     st.text_area("변환 결과", preview_text, height=320, label_visibility="collapsed")
 
-    if has_timestamps:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("문장 수", len(units))
-        col2.metric("입력 형식", "SRT" if source_format == SRT_FORMAT else "TXT")
-        col3.metric("시간 표기", "ON" if show_timestamps else "OFF")
-    else:
-        if source_format == PLAIN_TEXT_FORMAT:
-            col1, col2, col3 = st.columns(3)
-            col1.metric("문장 수", len(units))
-            col2.metric("입력 형식", "TXT")
-            col3.metric("텍스트 패턴", "PodScripts" if text_pattern == TEXT_PATTERN_PODSCRIPTS else "기본")
-        else:
-            col1, col2 = st.columns(2)
-            col1.metric("문장 수", len(units))
-            col2.metric("입력 형식", "SRT")
-
-    st.caption(f"타이틀: {source_label}")
-
+    st.subheader("다운로드")
     download_col1, download_col2 = st.columns(2)
     download_col1.download_button(
-        label="문제 PDF 다운로드",
+        label="문제지 PDF 받기",
         data=pdf_bytes,
         file_name=build_download_filename(source_name),
         mime="application/pdf",
         use_container_width=True,
     )
     download_col2.download_button(
-        label="답지 PDF 다운로드",
+        label="답지 PDF 받기",
         data=answer_key_bytes,
         file_name=build_answer_key_filename(source_name),
         mime="application/pdf",
