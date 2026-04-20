@@ -1,5 +1,6 @@
 import io
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -58,6 +59,12 @@ class RenderSegment:
     font_name: str = PDF_FONT_NAME
     font_size: float = 13
     color: colors.Color = colors.black
+
+
+@dataclass(frozen=True)
+class PreparedSource:
+    source_name: str
+    units: list[TextUnit]
 
 
 def decode_text(raw_bytes: bytes) -> str:
@@ -792,6 +799,46 @@ def build_answer_key_filename(original_name: str) -> str:
     return f"{stem}_answer_key.pdf"
 
 
+def ensure_unique_filename(filename: str, used_names: set[str]) -> str:
+    if filename not in used_names:
+        used_names.add(filename)
+        return filename
+
+    path = Path(filename)
+    index = 2
+    while True:
+        candidate = f"{path.stem}_{index}{path.suffix}"
+        if candidate not in used_names:
+            used_names.add(candidate)
+            return candidate
+        index += 1
+
+
+def build_zip_archive(files: list[tuple[str, bytes]]) -> bytes:
+    buffer = io.BytesIO()
+    used_names: set[str] = set()
+
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, file_bytes in files:
+            archive_name = ensure_unique_filename(filename, used_names)
+            zip_file.writestr(archive_name, file_bytes)
+
+    return buffer.getvalue()
+
+
+def build_zip_download_filename(source_names: Iterable[str], kind: str) -> str:
+    names = list(source_names)
+    if len(names) == 1:
+        stem = sanitize_filename_component(Path(names[0]).stem)
+        if kind == "dictation":
+            return f"{stem}_worksheets.zip"
+        return f"{stem}_answer_keys.zip"
+
+    if kind == "dictation":
+        return "dictation_worksheets.zip"
+    return "dictation_answer_keys.zip"
+
+
 def main() -> None:
     st.set_page_config(page_title="영어 딕테이션 PDF 만들기", layout="centered")
     st.title("영어 딕테이션 PDF 만들기")
@@ -809,19 +856,25 @@ def main() -> None:
     raw_text = ""
     source_format = PLAIN_TEXT_FORMAT
     text_pattern = TEXT_PATTERN_BASIC
+    prepared_sources: list[PreparedSource] = []
 
     if input_mode == FILE_INPUT_MODE:
-        uploaded_file = st.file_uploader(
+        uploaded_files = st.file_uploader(
             "자막 또는 스크립트 파일",
             type=["txt", "srt"],
+            accept_multiple_files=True,
         )
-        if not uploaded_file:
-            st.info("`.txt` 또는 `.srt` 파일을 올려주세요.")
+        if not uploaded_files:
+            st.info("`.txt` 또는 `.srt` 파일을 하나 이상 올려주세요.")
             return
 
-        source_name = uploaded_file.name
-        raw_text = decode_text(uploaded_file.getvalue())
-        source_format = SRT_FORMAT if is_srt_file(uploaded_file.name) else PLAIN_TEXT_FORMAT
+        has_text_files = any(not is_srt_file(uploaded_file.name) for uploaded_file in uploaded_files)
+        if has_text_files:
+            text_pattern = st.radio(
+                "TXT 파일 종류",
+                [TEXT_PATTERN_BASIC, TEXT_PATTERN_PODSCRIPTS],
+                horizontal=True,
+            )
     else:
         source_format = st.radio(
             "붙여 넣는 내용",
@@ -852,51 +905,128 @@ def main() -> None:
     mode = st.radio("빈칸 방식", [WORD_MODE, SENTENCE_MODE], horizontal=True)
     show_first_word = st.checkbox("각 문장의 첫 단어 남기기", value=False)
 
-    units = extract_units(source_name, raw_text, text_pattern=text_pattern)
+    if input_mode == FILE_INPUT_MODE:
+        skipped_files: list[str] = []
+        for uploaded_file in uploaded_files:
+            file_name = uploaded_file.name
+            file_text = decode_text(uploaded_file.getvalue())
+            units = extract_units(file_name, file_text, text_pattern=text_pattern)
+            if not units:
+                skipped_files.append(file_name)
+                continue
+            prepared_sources.append(PreparedSource(source_name=file_name, units=units))
 
-    if not units:
-        st.error("읽을 수 있는 내용이 없어요. 파일 형식이나 텍스트를 다시 확인해주세요.")
-        return
+        if not prepared_sources:
+            st.error("읽을 수 있는 내용이 없어요. 파일 형식이나 텍스트를 다시 확인해주세요.")
+            return
 
-    has_timestamps = any(unit.timestamp for unit in units)
+        if skipped_files:
+            skipped_list = ", ".join(skipped_files)
+            st.warning(f"일부 파일은 읽지 못해 제외했어요: {skipped_list}")
+    else:
+        units = extract_units(source_name, raw_text, text_pattern=text_pattern)
+        if not units:
+            st.error("읽을 수 있는 내용이 없어요. 파일 형식이나 텍스트를 다시 확인해주세요.")
+            return
+        prepared_sources.append(PreparedSource(source_name=source_name, units=units))
+
+    has_timestamps = any(
+        unit.timestamp
+        for prepared_source in prepared_sources
+        for unit in prepared_source.units
+    )
     show_timestamps = st.checkbox("시간 표시하기", value=True) if has_timestamps else False
 
+    preview_source = prepared_sources[0]
+    if input_mode == FILE_INPUT_MODE and len(prepared_sources) > 1:
+        preview_index = st.selectbox(
+            "미리볼 파일",
+            range(len(prepared_sources)),
+            format_func=lambda index: prepared_sources[index].source_name,
+        )
+        preview_source = prepared_sources[preview_index]
+
     preview_units = [
-        transform_unit(unit, mode=mode, show_first_word=show_first_word) for unit in units
+        transform_unit(unit, mode=mode, show_first_word=show_first_word)
+        for unit in preview_source.units
     ]
     preview_text = build_preview_text(preview_units, show_timestamps)
-    pdf_bytes = build_pdf(
-        units=units,
-        original_name=source_name,
-        mode=mode,
-        show_first_word=show_first_word,
-        show_timestamps=show_timestamps,
-    )
-    answer_key_bytes = build_answer_key_pdf(
-        units=units,
-        original_name=source_name,
-        show_timestamps=show_timestamps,
-    )
 
     st.subheader("미리보기")
     st.text_area("변환 결과", preview_text, height=320, label_visibility="collapsed")
 
     st.subheader("다운로드")
     download_col1, download_col2 = st.columns(2)
-    download_col1.download_button(
-        label="문제지 PDF 받기",
-        data=pdf_bytes,
-        file_name=build_download_filename(source_name),
-        mime="application/pdf",
-        use_container_width=True,
-    )
-    download_col2.download_button(
-        label="답지 PDF 받기",
-        data=answer_key_bytes,
-        file_name=build_answer_key_filename(source_name),
-        mime="application/pdf",
-        use_container_width=True,
-    )
+    if input_mode == FILE_INPUT_MODE:
+        worksheet_files = [
+            (
+                build_download_filename(prepared_source.source_name),
+                build_pdf(
+                    units=prepared_source.units,
+                    original_name=prepared_source.source_name,
+                    mode=mode,
+                    show_first_word=show_first_word,
+                    show_timestamps=show_timestamps,
+                ),
+            )
+            for prepared_source in prepared_sources
+        ]
+        answer_key_files = [
+            (
+                build_answer_key_filename(prepared_source.source_name),
+                build_answer_key_pdf(
+                    units=prepared_source.units,
+                    original_name=prepared_source.source_name,
+                    show_timestamps=show_timestamps,
+                ),
+            )
+            for prepared_source in prepared_sources
+        ]
+        worksheet_zip = build_zip_archive(worksheet_files)
+        answer_key_zip = build_zip_archive(answer_key_files)
+        source_names = [prepared_source.source_name for prepared_source in prepared_sources]
+
+        download_col1.download_button(
+            label="문제지 ZIP 받기",
+            data=worksheet_zip,
+            file_name=build_zip_download_filename(source_names, kind="dictation"),
+            mime="application/zip",
+            use_container_width=True,
+        )
+        download_col2.download_button(
+            label="답지 ZIP 받기",
+            data=answer_key_zip,
+            file_name=build_zip_download_filename(source_names, kind="answer_key"),
+            mime="application/zip",
+            use_container_width=True,
+        )
+    else:
+        pdf_bytes = build_pdf(
+            units=preview_source.units,
+            original_name=preview_source.source_name,
+            mode=mode,
+            show_first_word=show_first_word,
+            show_timestamps=show_timestamps,
+        )
+        answer_key_bytes = build_answer_key_pdf(
+            units=preview_source.units,
+            original_name=preview_source.source_name,
+            show_timestamps=show_timestamps,
+        )
+        download_col1.download_button(
+            label="문제지 PDF 받기",
+            data=pdf_bytes,
+            file_name=build_download_filename(preview_source.source_name),
+            mime="application/pdf",
+            use_container_width=True,
+        )
+        download_col2.download_button(
+            label="답지 PDF 받기",
+            data=answer_key_bytes,
+            file_name=build_answer_key_filename(preview_source.source_name),
+            mime="application/pdf",
+            use_container_width=True,
+        )
 
 
 if __name__ == "__main__":
